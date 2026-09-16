@@ -20,6 +20,7 @@ Item {
   property var viewModel: ({ title: "", rows: [], columns: [] })
   property int colCount: 4
   property string mode: "full"
+  property bool delayReady: false
 
   readonly property string sourceDir: {
     var value = String(Qt.resolvedUrl("."))
@@ -50,14 +51,21 @@ Item {
 
     root.mask = Number(nextMask) || 0
     if ((root.mask & 64) === 0 || root.mode === "off") {
+      root.delayReady = false
       root.opened = false
+      wait.stop()
       return
     }
 
     if (root.rows.length === 0 && !load.running)
       load.running = true
 
-    root.maybeOpen()
+    if (root.opened) {
+      root.maybeOpen()
+      return
+    }
+
+    wait.restart()
   }
 
   function maybeOpen() {
@@ -65,6 +73,8 @@ Item {
       root.opened = false
       return
     }
+    if (!root.delayReady)
+      return
     if (root.rows.length === 0)
       return
     root.rebuild()
@@ -99,7 +109,18 @@ Item {
 
   function close() {
     root.mask = 0
+    root.delayReady = false
     root.opened = false
+    wait.stop()
+  }
+
+  Timer {
+    id: wait
+    interval: 100
+    onTriggered: {
+      root.delayReady = true
+      root.maybeOpen()
+    }
   }
 
   Process {
