@@ -1,0 +1,30 @@
+#!/bin/bash
+set -euo pipefail
+
+dir="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy"
+file="$dir/vhladko-hints.json"
+mkdir -p "$dir"
+
+read_mode() {
+  local mode=full
+  if [[ -f $file ]]; then
+    mode=$(grep -o '"mode"[[:space:]]*:[[:space:]]*"[^"]*"' "$file" | head -1 | cut -d'"' -f4)
+  fi
+  case $mode in
+  full | beginner | off) printf '%s\n' "$mode" ;;
+  *) printf '%s\n' full ;;
+  esac
+}
+
+if [[ ${1:-} == "" ]]; then
+  read_mode
+  exit 0
+fi
+
+case $1 in
+full | beginner | off) ;;
+*) exit 64 ;;
+esac
+
+printf '{"mode":"%s"}\n' "$1" >"$file"
+printf '%s\n' "$1"

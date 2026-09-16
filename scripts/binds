@@ -1,0 +1,25 @@
+#!/bin/bash
+set -euo pipefail
+
+omarchy-menu-keybindings --print >/dev/null
+
+dir="${XDG_CACHE_HOME:-$HOME/.cache}/omarchy"
+shopt -s nullglob
+files=("$dir"/keybindings-*.records)
+shopt -u nullglob
+
+newest=""
+newest_mtime=0
+for file in "${files[@]}"; do
+  mtime=$(stat -c %Y "$file" 2>/dev/null || stat -f %m "$file")
+  if (( mtime >= newest_mtime )); then
+    newest=$file
+    newest_mtime=$mtime
+  fi
+done
+
+if [[ -n $newest ]]; then
+  cat "$newest"
+else
+  omarchy-menu-keybindings --print
+fi

@@ -60,8 +60,41 @@ function chordMask(parts) {
   return { mask: mask, key: key }
 }
 
+var ORDER = ["Menu", "Apps", "Windows", "Workspaces", "Panels", "Capture", "Clipboard", "System", "Other"]
+
+function groupOf(row) {
+  var d = String(row.description || "").toLowerCase()
+  var cmd = (String(row.dispatcher || "") + " " + String(row.arg || "")).toLowerCase()
+  var blob = d + " " + cmd
+
+  if (/omarchy-capture|hyprpicker|screenshot|screenrecord|color picker|ocr|webcam/.test(blob))
+    return "Capture"
+  if (/clipboard|universal copy|universal paste|universal cut|sendshortcut/.test(blob))
+    return "Clipboard"
+  if (/omarchy-menu/.test(cmd) || /\bmenu\b|keybindings/.test(d))
+    return "Menu"
+  if (/omarchy-shell|omarchy-notification|omarchy-reminder|omarchy-audio/.test(cmd) ||
+      /bar panel|^audio$|^bluetooth$|^network$|^wifi|^display$|^power$|^calendar$|^emojis?$|^calculator$|^activity|weather|battery|reminder|^show time$/.test(d))
+    return "Panels"
+  if (/workspace|scratchpad/.test(d) || /hl\.dsp\.workspace|workspace/.test(cmd))
+    return "Workspaces"
+  if (/omarchy-hyprland-window|hl\.dsp\.window|hl\.dsp\.group|hl\.dsp\.layout/.test(cmd) ||
+      /focus\(\s*\{\s*direction|focus\(\s*\{\s*monitor/.test(cmd) ||
+      /floating|full screen|full width|close window|split|pop window|swap window|resize window|expand window|shrink window|group|tiling|pseudo|window /.test(d))
+    return "Windows"
+  if (/omarchy-launch|launch-|webapp|uwsm-app/.test(cmd) || /terminal|browser|file manager|editor/.test(d))
+    return "Apps"
+  if (/lock|nightlight|idle|notification|zoom|theme|scale|lid|clamshell|dictation|brightness|backlight|eject|agent|transcode/.test(d) ||
+      /omarchy-system|omarchy-toggle|omarchy-hyprland-monitor|omarchy-brightness|omarchy-agent|omarchy-transcode|voxtype|eject/.test(cmd))
+    return "System"
+  return "Other"
+}
+
 function parseLine(line) {
-  var text = String(line || "")
+  var fields = String(line || "").split("\t")
+  var text = fields[0] || ""
+  var dispatcher = fields[1] || ""
+  var arg = fields.slice(2).join("\t")
   var cut = text.indexOf("→")
   if (cut < 0) cut = text.indexOf("->")
   if (cut < 0) return null
@@ -80,7 +113,15 @@ function parseLine(line) {
     if (parsed.mask === mask) labels.push(keyName(parsed.key))
   }
   if (mask < 0 || labels.length === 0) return null
-  return { mask: mask, label: labels.join(" / "), description: description }
+  var row = {
+    mask: mask,
+    label: labels.join(" / "),
+    description: description,
+    dispatcher: dispatcher,
+    arg: arg
+  }
+  row.group = groupOf(row)
+  return row
 }
 
 function parse(text) {
@@ -104,21 +145,127 @@ function filter(rows, mask) {
   return out
 }
 
-function chunk(rows, size) {
-  var columns = []
-  var n = size > 0 ? size : 18
-  for (var i = 0; i < rows.length; i += n)
-    columns.push(rows.slice(i, i + n))
-  return columns
+function workspaceKind(description) {
+  var d = String(description || "").toLowerCase()
+  if (/^switch to workspace \d+$/.test(d)) return "switch"
+  if (/^move window to workspace \d+$/.test(d)) return "move"
+  if (/^move window silently to workspace \d+$/.test(d)) return "silent"
+  return ""
 }
 
-function view(rows, mask) {
-  var shown = filter(rows, mask)
-  var per = 18
-  if (shown.length > 54) per = Math.ceil(shown.length / 3)
+function collapse(shown) {
+  var buckets = { switch: [], move: [], silent: [] }
+  var rest = []
+  for (var i = 0; i < shown.length; i++) {
+    var kind = workspaceKind(shown[i].description)
+    if (kind) buckets[kind].push(shown[i])
+    else rest.push(shown[i])
+  }
+
+  function fold(kind, description) {
+    var list = buckets[kind]
+    if (list.length === 1) {
+      rest.push(list[0])
+      return
+    }
+    if (list.length === 0) return
+    rest.push({
+      mask: list[0].mask,
+      label: "1–0",
+      description: description,
+      group: "Workspaces",
+      collapsed: true
+    })
+  }
+
+  fold("switch", "Switch workspace")
+  fold("move", "Move to workspace")
+  fold("silent", "Move to workspace (stay)")
+  return rest
+}
+
+var BEGINNER = {
+  "keybindings": true,
+  "omarchy menu": true,
+  "terminal": true,
+  "browser": true,
+  "file manager": true,
+  "close window": true,
+  "full screen": true,
+  "toggle window floating/tiling": true,
+  "switch workspace": true,
+  "move to workspace": true
+}
+
+function beginner(shown) {
+  var out = []
+  for (var i = 0; i < shown.length; i++) {
+    var d = String(shown[i].description || "").toLowerCase()
+    if (BEGINNER[d]) out.push(shown[i])
+  }
+  return out
+}
+
+function groups(shown) {
+  var buckets = {}
+  for (var i = 0; i < shown.length; i++) {
+    var name = shown[i].group || "Other"
+    if (!buckets[name]) buckets[name] = []
+    buckets[name].push(shown[i])
+  }
+  var out = []
+  for (var g = 0; g < ORDER.length; g++) {
+    var list = buckets[ORDER[g]]
+    if (!list || list.length === 0) continue
+    var items = [{ header: true, label: ORDER[g], description: "" }]
+    for (var j = 0; j < list.length; j++) {
+      items.push({
+        header: false,
+        label: list[j].label,
+        description: list[j].description
+      })
+    }
+    out.push(items)
+  }
+  return out
+}
+
+function pack(grouped, cols) {
+  var n = Math.max(1, Math.floor(Number(cols) || 1))
+  var columns = []
+  var heights = []
+  for (var i = 0; i < n; i++) {
+    columns.push([])
+    heights.push(0)
+  }
+  for (var g = 0; g < grouped.length; g++) {
+    var items = grouped[g]
+    var best = 0
+    for (var c = 1; c < n; c++) {
+      if (heights[c] < heights[best])
+        best = c
+    }
+    for (var j = 0; j < items.length; j++)
+      columns[best].push(items[j])
+    heights[best] += items.length
+  }
+  var filled = []
+  for (var k = 0; k < n; k++) {
+    if (columns[k].length)
+      filled.push(columns[k])
+  }
+  return filled
+}
+
+function view(rows, mask, cols, mode) {
+  if (mode === "off")
+    return { title: title(mask), rows: [], columns: [] }
+  var shown = collapse(filter(rows, mask))
+  if (mode === "beginner")
+    shown = beginner(shown)
   return {
     title: title(mask),
     rows: shown,
-    columns: chunk(shown, per)
+    columns: pack(groups(shown), cols)
   }
 }

@@ -6,10 +6,19 @@
   "author": "Vlad Hladko",
   "description": "Hold Super to peek at the same shortcuts Super + K lists",
   "kinds": [
-    "service"
+    "service",
+    "bar-widget"
   ],
   "keepLoaded": true,
   "entryPoints": {
-    "service": "Overlay.qml"
+    "service": "Overlay.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Shortcut hints",
+    "description": "Click to cycle full, beginner, and off",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "right"
   }
 }

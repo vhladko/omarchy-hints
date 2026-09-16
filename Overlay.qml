@@ -16,9 +16,10 @@ Item {
   property bool opened: false
   property int mask: 0
   property int lastSeq: 0
-  property bool delayReady: false
   property var rows: []
   property var viewModel: ({ title: "", rows: [], columns: [] })
+  property int colCount: 4
+  property string mode: "full"
 
   readonly property string sourceDir: {
     var value = String(Qt.resolvedUrl("."))
@@ -37,7 +38,7 @@ Item {
   }
 
   function rebuild() {
-    root.viewModel = Hints.view(root.rows, root.mask)
+    root.viewModel = Hints.view(root.rows, root.mask, root.colCount, root.mode)
   }
 
   function accept(seq, nextMask) {
@@ -48,60 +49,62 @@ Item {
       root.lastSeq = n
 
     root.mask = Number(nextMask) || 0
-    if ((root.mask & 64) === 0) {
-      root.delayReady = false
+    if ((root.mask & 64) === 0 || root.mode === "off") {
       root.opened = false
-      wait.stop()
       return
     }
 
     if (root.rows.length === 0 && !load.running)
       load.running = true
 
-    if (root.opened) {
-      root.rebuild()
-      return
-    }
-
-    wait.restart()
+    root.maybeOpen()
   }
 
   function maybeOpen() {
-    if ((root.mask & 64) === 0)
+    if ((root.mask & 64) === 0 || root.mode === "off") {
+      root.opened = false
       return
-    if (!root.delayReady)
-      return
+    }
     if (root.rows.length === 0)
       return
     root.rebuild()
     root.opened = root.viewModel.rows.length > 0
   }
 
+  function applyMode(value) {
+    var next = String(value || "").trim()
+    if (next !== "full" && next !== "beginner" && next !== "off")
+      return root.mode
+    root.mode = next
+    writeMode.running = false
+    writeMode.running = true
+    if (root.mode === "off")
+      root.opened = false
+    else if ((root.mask & 64) !== 0)
+      root.maybeOpen()
+    return root.mode
+  }
+
+  function cycleMode() {
+    if (root.mode === "full")
+      return root.applyMode("beginner")
+    if (root.mode === "beginner")
+      return root.applyMode("off")
+    return root.applyMode("full")
+  }
+
   function open(payloadJson) {
     root.accept(root.lastSeq + 1, 64)
-    root.delayReady = true
-    root.maybeOpen()
   }
 
   function close() {
     root.mask = 0
-    root.delayReady = false
     root.opened = false
-    wait.stop()
-  }
-
-  Timer {
-    id: wait
-    interval: 200
-    onTriggered: {
-      root.delayReady = true
-      root.maybeOpen()
-    }
   }
 
   Process {
     id: load
-    command: ["omarchy-menu-keybindings", "--print"]
+    command: [root.sourceDir + "/scripts/binds"]
     running: false
     stdout: StdioCollector {
       id: loadOut
@@ -119,6 +122,27 @@ Item {
     running: false
   }
 
+  Process {
+    id: readMode
+    command: [root.sourceDir + "/scripts/state"]
+    running: false
+    stdout: StdioCollector {
+      id: readModeOut
+      waitForEnd: true
+    }
+    onExited: {
+      var value = String(readModeOut.text).trim()
+      if (value === "full" || value === "beginner" || value === "off")
+        root.mode = value
+    }
+  }
+
+  Process {
+    id: writeMode
+    command: [root.sourceDir + "/scripts/state", root.mode]
+    running: false
+  }
+
   IpcHandler {
     target: "vhladko.hints"
     function state(sequence: int, mask: int): void {
@@ -126,6 +150,15 @@ Item {
     }
     function ping(): string {
       return "ok"
+    }
+    function mode(): string {
+      return root.mode
+    }
+    function cycle(): string {
+      return root.cycleMode()
+    }
+    function setMode(value: string): string {
+      return root.applyMode(value)
     }
     function open(): void {
       root.open("{}")
@@ -144,6 +177,8 @@ Item {
   Component.onCompleted: {
     if (root.sourceDir)
       hook.running = true
+    readMode.running = true
+    load.running = true
   }
 
   Variants {
@@ -171,20 +206,25 @@ Item {
 
       BorderSurface {
         id: card
+        anchors.left: parent.left
         anchors.right: parent.right
         anchors.bottom: parent.bottom
-        anchors.rightMargin: Style.gapsOut
-        anchors.bottomMargin: Style.gapsOut
         color: Color.popups.background
         borderSpec: Border.surfaceSpec("popups", "border", Color.popups.border, Math.max(1, Style.space(1)))
-        radius: Style.cornerRadius
+        radius: 0
 
-        readonly property int pad: Style.space(10)
+        readonly property int pad: Style.space(12)
+        readonly property int colMin: Style.space(360)
+        readonly property int cols: Math.max(1, Math.floor((overlay.width - pad * 2) / colMin))
 
-        implicitWidth: body.implicitWidth + borderLeft + pad * 2 + borderRight
-        implicitHeight: body.implicitHeight + borderTop + pad * 2 + borderBottom
-        width: Math.min(implicitWidth, overlay.width - Style.gapsOut * 2)
-        height: Math.min(implicitHeight, overlay.height - Style.gapsOut * 2)
+        height: Math.min(body.implicitHeight + borderTop + pad * 2 + borderBottom, overlay.height * 0.8)
+
+        onColsChanged: {
+          if (root.colCount !== cols) {
+            root.colCount = cols
+            root.rebuild()
+          }
+        }
 
         ColumnLayout {
           id: body
@@ -193,7 +233,7 @@ Item {
           anchors.rightMargin: card.borderRight + card.pad
           anchors.bottomMargin: card.borderBottom + card.pad
           anchors.leftMargin: card.borderLeft + card.pad
-          spacing: Style.space(6)
+          spacing: Style.space(8)
 
           Text {
             textFormat: Text.PlainText
@@ -205,51 +245,78 @@ Item {
             font.letterSpacing: 1.5
           }
 
-          Rectangle {
-            Layout.fillWidth: true
-            Layout.preferredHeight: Math.max(1, Style.space(1))
-            color: Color.popups.border
-          }
-
           RowLayout {
-            spacing: Style.space(16)
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            spacing: Style.space(32)
 
             Repeater {
               model: root.viewModel.columns
 
               delegate: ColumnLayout {
                 required property var modelData
-                spacing: Style.space(4)
+                Layout.fillWidth: true
+                Layout.alignment: Qt.AlignTop
+                spacing: Style.space(6)
 
                 Repeater {
                   model: modelData
 
-                  delegate: RowLayout {
+                  delegate: ColumnLayout {
                     required property var modelData
-                    spacing: Style.space(8)
+                    Layout.fillWidth: true
+                    Layout.topMargin: (index > 0 && modelData.header === true) ? Style.space(10) : 0
+                    spacing: Style.space(2)
 
                     Text {
+                      visible: modelData.header === true
                       textFormat: Text.PlainText
                       text: modelData.label
-                      color: Color.accent
+                      color: Color.muted
                       font.family: Style.font.family
-                      font.pixelSize: Style.font.body
+                      font.pixelSize: Style.font.caption
                       font.bold: true
+                      font.letterSpacing: 1.2
                     }
 
-                    Text {
-                      textFormat: Text.PlainText
+                    RowLayout {
+                      visible: modelData.header !== true
                       Layout.fillWidth: true
-                      text: modelData.description
-                      color: Color.popups.text
-                      font.family: Style.font.family
-                      font.pixelSize: Style.font.body
-                      elide: Text.ElideRight
+                      spacing: Style.space(8)
+
+                      Text {
+                        textFormat: Text.PlainText
+                        Layout.preferredWidth: Style.space(110)
+                        text: modelData.label
+                        color: Color.accent
+                        font.family: Style.font.family
+                        font.pixelSize: Style.font.body
+                        font.bold: true
+                        elide: Text.ElideRight
+                      }
+
+                      Text {
+                        textFormat: Text.PlainText
+                        Layout.fillWidth: true
+                        text: modelData.description
+                        color: Color.popups.text
+                        font.family: Style.font.family
+                        font.pixelSize: Style.font.body
+                        elide: Text.ElideRight
+                      }
                     }
                   }
                 }
               }
             }
+          }
+
+          Text {
+            textFormat: Text.PlainText
+            text: "Super + K to search"
+            color: Color.muted
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
           }
         }
       }
