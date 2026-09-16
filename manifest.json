@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "id": "vhladko.hints",
+  "name": "Shortcut hints",
+  "version": "1.0.0",
+  "author": "Vlad Hladko",
+  "description": "Hold Super to peek at the same shortcuts Super + K lists",
+  "kinds": [
+    "service"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "service": "Overlay.qml"
+  }
+}

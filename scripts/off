@@ -1,0 +1,23 @@
+#!/bin/bash
+set -euo pipefail
+
+config="${HOME}/.config/hypr/bindings.lua"
+begin='-- vhladko.hints:begin'
+end='-- vhladko.hints:end'
+
+[[ -f $config ]] || exit 0
+if [[ -L $config ]]; then
+  echo "off: refusing symlink $config" >&2
+  exit 73
+fi
+
+grep -Fqx -- "$begin" "$config" || exit 0
+
+tmp=$(mktemp "${config}.tmp.XXXXXX")
+awk -v begin="$begin" -v end="$end" '
+  $0 == begin { skip = 1; next }
+  skip && $0 == end { skip = 0; next }
+  !skip { print }
+' "$config" >"$tmp"
+mv -f -- "$tmp" "$config"
+hyprctl reload >/dev/null

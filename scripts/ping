@@ -1,0 +1,4 @@
+#!/bin/bash
+set -euo pipefail
+[[ $# -eq 2 && $1 =~ ^[0-9]+$ && $2 =~ ^[0-9]+$ ]] || exit 64
+exec omarchy-shell -q vhladko.hints state "$1" "$2"

@@ -1,0 +1,96 @@
+#!/bin/bash
+set -euo pipefail
+
+src=${1:-}
+[[ -n $src && -d $src ]] || exit 64
+ping="$src/scripts/ping"
+[[ -x $ping ]] || exit 64
+
+config="${HOME}/.config/hypr/bindings.lua"
+begin='-- vhladko.hints:begin'
+end='-- vhladko.hints:end'
+
+if [[ -L $config ]]; then
+  echo "on: refusing symlink $config" >&2
+  exit 73
+fi
+
+mkdir -p "$(dirname "$config")"
+[[ -f $config ]] || : >"$config"
+
+if grep -Fqx -- "$begin" "$config" && grep -Fq -- "$ping" "$config"; then
+  exit 0
+fi
+
+codes=$(mktemp)
+trap 'rm -f -- "$codes"' EXIT
+
+fallback() {
+  printf '%s\n' '133 64' '134 64' '50 1' '62 1' '37 4' '105 4' '64 8' '108 8'
+}
+
+if command -v xkbcli >/dev/null && command -v hyprctl >/dev/null && command -v jq >/dev/null; then
+  keymap=$(mktemp)
+  modmaps=$(mktemp)
+  trap 'rm -f -- "$codes" "$keymap" "$modmaps"' EXIT
+  args=()
+  for opt in kb_model kb_layout kb_variant kb_options; do
+    val=$(hyprctl getoption -j "input:$opt" 2>/dev/null | jq -r '.str // empty')
+    [[ -n $val ]] && args+=("--${opt#kb_}" "$val")
+  done
+  if xkbcli compile-keymap "${args[@]}" >"$keymap" 2>/dev/null &&
+    xkbcli compile-keymap "${args[@]}" --modmaps >"$modmaps" 2>/dev/null; then
+    awk '
+      FNR == NR {
+        if (match($0, /<([A-Za-z0-9_]+)>[[:space:]]*=[[:space:]]*([0-9]+)[[:space:]]*;/, p)) code[p[1]] = p[2]
+        next
+      }
+      match($0, /^  ([A-Za-z0-9_]+):$/, p) { key = p[1]; next }
+      match($0, /^[[:space:]]+real:[[:space:]]+([A-Za-z0-9 +]+)$/, p) && code[key] {
+        n = split(p[1], parts, /[[:space:]]*\+[[:space:]]*/)
+        bits = 0
+        for (i = 1; i <= n; i++) {
+          gsub(/^[[:space:]]+|[[:space:]]+$/, "", parts[i])
+          if (parts[i] == "Shift") bits = or(bits, 1)
+          if (parts[i] == "Control") bits = or(bits, 4)
+          if (parts[i] == "Mod1") bits = or(bits, 8)
+          if (parts[i] == "Mod4") bits = or(bits, 64)
+        }
+        if (bits) print code[key], bits
+      }
+    ' "$keymap" "$modmaps" >"$codes"
+  fi
+fi
+
+if [[ ! -s $codes ]] || ! awk '$2 == 64 { found = 1 } END { exit !found }' "$codes"; then
+  fallback >"$codes"
+fi
+
+tmp=$(mktemp "${config}.tmp.XXXXXX")
+awk -v begin="$begin" -v end="$end" '
+  $0 == begin { skip = 1; next }
+  skip && $0 == end { skip = 0; next }
+  !skip { print }
+' "$config" >"$tmp"
+
+{
+  printf '%s\n' "$begin"
+  printf 'local vhladko_hints_codes = {\n'
+  while read -r code bit; do
+    printf '  [%s] = %s,\n' "$code" "$bit"
+  done <"$codes"
+  printf '}\n'
+  printf 'local vhladko_hints_held = {}\n'
+  printf 'hl.on("input.keyboard.key", function(keycode, time, state)\n'
+  printf '  local bit = vhladko_hints_codes[keycode]\n'
+  printf '  if not bit then return end\n'
+  printf '  if state == 1 then vhladko_hints_held[keycode] = bit else vhladko_hints_held[keycode] = nil end\n'
+  printf '  local mask = 0\n'
+  printf '  for _, v in pairs(vhladko_hints_held) do mask = mask | v end\n'
+  printf '  hl.exec_cmd("%s " .. tostring(time) .. " " .. tostring(mask))\n' "${ping//\\/\\\\}"
+  printf 'end)\n'
+  printf '%s\n' "$end"
+} >>"$tmp"
+
+mv -f -- "$tmp" "$config"
+hyprctl reload >/dev/null
